@@ -13,16 +13,11 @@ from bs4 import BeautifulSoup
 TELEGRAM_TOKEN = "8795696345:AAF2fnRFMZ0xajUntVqrwYDbQiAzf9M3Ljs"
 TELEGRAM_CHAT_ID = "248752467"
 
-# Ключевые слова для поиска
-KEYWORDS = ["product manager", "продуктовый менеджер", "PM", "product owner", "CPO"]
+KEYWORDS = ["product manager", "продуктовый менеджер", "product owner", "CPO", "head of product"]
 
-# Локации
-LOCATIONS = ["remote", "удалённо", "serbia", "сербия", "europe", "европа", "cyprus", "кипр", "белград"]
+# Как часто проверять (в секундах). 86400 = раз в день
+CHECK_INTERVAL = 7200
 
-# Как часто проверять вакансии (в секундах). 3600 = каждый час
-CHECK_INTERVAL = 86400
-
-# Файл для хранения уже отправленных вакансий
 SEEN_FILE = "seen_jobs.json"
 # ============================================================
 
@@ -39,30 +34,69 @@ def save_seen(seen):
 async def send_telegram(text: str):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     async with httpx.AsyncClient() as client:
-        await client.post(url, json={
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": text,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": False
-        })
+        try:
+            await client.post(url, json={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": False
+            })
+        except Exception as e:
+            print(f"Ошибка отправки в Telegram: {e}")
 
-def is_relevant(title: str, description: str = "") -> bool:
-    text = (title + " " + description).lower()
-    has_keyword = any(kw.lower() in text for kw in KEYWORDS)
-    has_location = any(loc.lower() in text for loc in LOCATIONS) or "remote" in text or "удалён" in text
-    return has_keyword and has_location
+def format_job(job: dict) -> str:
+    lines = [f"<b>{job['title']}</b>"]
+    if job.get("employer"):
+        lines.append(f"🏢 {job['employer']}")
+    if job.get("location"):
+        lines.append(f"📍 {job['location']}")
+    if job.get("salary"):
+        lines.append(f"💰 {job['salary']}")
+    lines.append(f"🔗 <a href='{job['link']}'>{job['source']}</a>")
+    return "\n".join(lines)
 
 async def fetch_hh(seen: set) -> list:
     jobs = []
-    queries = ["product+manager", "product+owner"]
-    areas = "0"  # все регионы
 
-    async with httpx.AsyncClient(timeout=15) as client:
-        for query in queries:
+    # Ищем по каждому ключевому слову
+    # schedule=remote — удалённая работа
+    # Не ограничиваем регион чтобы захватить Сербию, Европу и удалёнку
+    searches = [
+        {"text": "product manager", "schedule": "remote"},
+        {"text": "product owner", "schedule": "remote"},
+        {"text": "head of product", "schedule": "remote"},
+        {"text": "продуктовый менеджер", "schedule": "remote"},
+        # Сербия — area code не поддерживается для зарубежья,
+        # ищем по тексту с локацией
+        {"text": "product manager Belgrade"},
+        {"text": "product manager Serbia"},
+        {"text": "product manager Cyprus"},
+        {"text": "product manager Nicosia"},
+        {"text": "product manager Europe remote"},
+    ]
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        for search in searches:
             try:
-                # Используем публичный API hh.ru
-                url = f"https://api.hh.ru/vacancies?text={query}&area={areas}&per_page=20&order_by=publication_time"
-                resp = await client.get(url, headers={"User-Agent": "job-monitor/1.0"})
+                params = {
+                    "text": search["text"],
+                    "per_page": 20,
+                    "order_by": "publication_time",
+                    "search_field": "name",  # ищем только в названии
+                }
+                if "schedule" in search:
+                    params["schedule"] = search["schedule"]
+
+                resp = await client.get(
+                    "https://api.hh.ru/vacancies",
+                    params=params,
+                    headers={"User-Agent": "job-monitor/1.0 (katerina@example.com)"}
+                )
+
+                if resp.status_code != 200:
+                    print(f"hh.ru вернул {resp.status_code} для '{search['text']}'")
+                    continue
+
                 data = resp.json()
 
                 for item in data.get("items", []):
@@ -76,18 +110,6 @@ async def fetch_hh(seen: set) -> list:
                     salary = item.get("salary")
                     schedule = item.get("schedule", {}).get("name", "")
                     area = item.get("area", {}).get("name", "")
-
-                    # Проверяем релевантность по локации
-                    location_text = (area + " " + schedule).lower()
-                    location_ok = (
-                        any(loc.lower() in location_text for loc in LOCATIONS)
-                        or "remote" in location_text
-                        or "удалённ" in location_text
-                        or "дистанционн" in location_text
-                    )
-
-                    if not location_ok:
-                        continue
 
                     salary_str = ""
                     if salary:
@@ -107,37 +129,45 @@ async def fetch_hh(seen: set) -> list:
                         "title": title,
                         "employer": employer,
                         "salary": salary_str,
-                        "location": f"{area} · {schedule}",
+                        "location": f"{area} · {schedule}".strip(" ·"),
                         "link": link
                     })
                     seen.add(job_id)
 
+                await asyncio.sleep(0.5)  # пауза между запросами
+
             except Exception as e:
-                print(f"Ошибка hh.ru: {e}")
+                print(f"Ошибка hh.ru для '{search.get('text')}': {e}")
 
     return jobs
 
 async def fetch_linkedin(seen: set) -> list:
-    """LinkedIn через публичный RSS/поиск без авторизации"""
     jobs = []
-    queries = ["product+manager+remote", "product+manager+serbia", "product+manager+europe"]
+    queries = [
+        "product-manager-remote",
+        "product-manager-serbia",
+        "product-manager-cyprus",
+        "product-manager-europe-remote",
+    ]
 
-    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
         for query in queries:
             try:
-                url = f"https://www.linkedin.com/jobs/search/?keywords={query}&f_WT=2&sortBy=DD"
+                url = f"https://www.linkedin.com/jobs/search/?keywords=product+manager&f_WT=2&f_TPR=r86400&sortBy=DD"
                 resp = await client.get(url, headers={
-                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "Accept-Language": "en-US,en;q=0.9",
                 })
-                soup = BeautifulSoup(resp.text, "html.parser")
-                cards = soup.find_all("div", class_=re.compile("job-search-card"))
 
-                for card in cards[:10]:
+                soup = BeautifulSoup(resp.text, "html.parser")
+                cards = soup.find_all("div", class_=re.compile("job-search-card|base-card"))
+
+                for card in cards[:15]:
                     try:
                         title_el = card.find("h3")
                         company_el = card.find("h4")
                         link_el = card.find("a", href=True)
-                        location_el = card.find("span", class_=re.compile("location"))
+                        location_el = card.find("span", class_=re.compile("location|job-search-card__location"))
 
                         if not title_el or not link_el:
                             continue
@@ -147,11 +177,8 @@ async def fetch_linkedin(seen: set) -> list:
                         link = link_el["href"].split("?")[0]
                         location = location_el.get_text(strip=True) if location_el else ""
 
-                        job_id = f"li_{link.split('/')[-1]}"
+                        job_id = f"li_{abs(hash(link))}"
                         if job_id in seen:
-                            continue
-
-                        if not is_relevant(title, location):
                             continue
 
                         jobs.append({
@@ -168,37 +195,26 @@ async def fetch_linkedin(seen: set) -> list:
                     except Exception:
                         continue
 
+                await asyncio.sleep(1)
+
             except Exception as e:
                 print(f"Ошибка LinkedIn: {e}")
 
     return jobs
 
-def format_job(job: dict) -> str:
-    lines = [f"<b>{job['title']}</b>"]
-    if job["employer"]:
-        lines.append(f"🏢 {job['employer']}")
-    if job["location"]:
-        lines.append(f"📍 {job['location']}")
-    if job["salary"]:
-        lines.append(f"💰 {job['salary']}")
-    lines.append(f"🔗 <a href='{job['link']}'>{job['source']}</a>")
-    return "\n".join(lines)
-
 async def run_check():
     seen = load_seen()
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Проверяю вакансии...")
 
-    all_jobs = []
     hh_jobs = await fetch_hh(seen)
     li_jobs = await fetch_linkedin(seen)
     all_jobs = hh_jobs + li_jobs
 
-    print(f"Найдено новых: {len(all_jobs)}")
+    print(f"hh.ru: {len(hh_jobs)}, LinkedIn: {len(li_jobs)}")
 
     if all_jobs:
-        header = f"🔍 <b>Новые вакансии Product Manager</b> — {datetime.now().strftime('%d.%m.%Y %H:%M')}\nНайдено: {len(all_jobs)}\n"
+        header = f"🔍 <b>Вакансии Product Manager</b> — {datetime.now().strftime('%d.%m.%Y %H:%M')}\nНайдено новых: {len(all_jobs)}\n"
         await send_telegram(header)
-
         for job in all_jobs:
             await send_telegram(format_job(job))
             await asyncio.sleep(0.5)
@@ -208,12 +224,16 @@ async def run_check():
     save_seen(seen)
 
 async def main():
-    await send_telegram("✅ <b>Job Monitor запущен!</b>\nБуду присылать вакансии Product Manager каждый час.\n\nИщу: hh.ru + LinkedIn\nЛокации: Remote, Сербия, Европа, Кипр")
-    
+    await send_telegram(
+        "✅ <b>Job Monitor запущен!</b>\n"
+        "Ищу вакансии Product Manager на hh.ru и LinkedIn.\n"
+        f"Проверка раз в {CHECK_INTERVAL // 3600} ч."
+    )
     while True:
         await run_check()
-        print(f"Следующая проверка через {CHECK_INTERVAL // 60} минут")
+        print(f"Следующая проверка через {CHECK_INTERVAL // 3600} ч.")
         await asyncio.sleep(CHECK_INTERVAL)
 
 if __name__ == "__main__":
     asyncio.run(main())
+
