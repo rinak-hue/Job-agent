@@ -30,7 +30,7 @@ EXCLUDE_LOCATIONS = [
     ", nc", ", nd", ", oh", ", ok", ", or", ", pa", ", ri", ", sc",
     ", sd", ", tn", ", tx", ", ut", ", vt", ", va", ", wa", ", wv",
     ", wi", ", wy", ", dc"
-]/Users/ekaterina.korostyleva/Downloads
+]
 
 # Как часто проверять (в секундах). 86400 = раз в день
 CHECK_INTERVAL = 86400
