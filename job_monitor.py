@@ -11,15 +11,30 @@ from bs4 import BeautifulSoup
 # НАСТРОЙКИ — ИЗМЕНИ ЗДЕСЬ
 # ============================================================
 TELEGRAM_TOKEN = "8795696345:AAF2fnRFMZ0xajUntVqrwYDbQiAzf9M3Ljs"
-TELEGRAM_CHAT_ID = "248752467"
+TELEGRAM_CHAT_ID = ["248752467", "142247089"]
 
 KEYWORDS = ["product manager", "продуктовый менеджер", "product owner", "CPO", "head of product"]
 
+# Локации которые нужно исключить
+EXCLUDE_LOCATIONS = [
+    "united states", "usa", "u.s.", "new york", "san francisco", "los angeles",
+    "chicago", "seattle", "austin", "boston", "denver", "miami", "atlanta"
+]
+
 # Как часто проверять (в секундах). 86400 = раз в день
-CHECK_INTERVAL = 7200
+CHECK_INTERVAL = 86400
 
 SEEN_FILE = "seen_jobs.json"
 # ============================================================
+
+def is_usa(location: str) -> bool:
+    """Проверяет что вакансия из США"""
+    loc = location.lower()
+    return any(excl in loc for excl in EXCLUDE_LOCATIONS)
+
+def is_russian(title: str) -> bool:
+    """Проверяет что в названии есть кириллица"""
+    return bool(re.search(r'[а-яА-ЯёЁ]', title))
 
 def load_seen():
     if os.path.exists(SEEN_FILE):
@@ -34,9 +49,9 @@ def save_seen(seen):
 async def send_telegram(text: str):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     async with httpx.AsyncClient() as client:
-        try:
+        for chat_id in TELEGRAM_CHAT_IDS:
             await client.post(url, json={
-                "chat_id": TELEGRAM_CHAT_ID,
+                "chat_id": chat_id,
                 "text": text,
                 "parse_mode": "HTML",
                 "disable_web_page_preview": False
@@ -45,7 +60,8 @@ async def send_telegram(text: str):
             print(f"Ошибка отправки в Telegram: {e}")
 
 def format_job(job: dict) -> str:
-    lines = [f"<b>{job['title']}</b>"]
+    flag = "🇷🇺 " if job.get("is_russian") else ""
+    lines = [f"{flag}<b>{job['title']}</b>"]
     if job.get("employer"):
         lines.append(f"🏢 {job['employer']}")
     if job.get("location"):
@@ -123,14 +139,21 @@ async def fetch_hh(seen: set) -> list:
                         elif to:
                             salary_str = f"до {to} {currency}"
 
+                    location_str = f"{area} · {schedule}".strip(" ·")
+
+                    # Исключаем США
+                    if is_usa(location_str):
+                        continue
+
                     jobs.append({
                         "id": job_id,
                         "source": "hh.ru",
                         "title": title,
                         "employer": employer,
                         "salary": salary_str,
-                        "location": f"{area} · {schedule}".strip(" ·"),
-                        "link": link
+                        "location": location_str,
+                        "link": link,
+                        "is_russian": is_russian(title)
                     })
                     seen.add(job_id)
 
@@ -181,6 +204,10 @@ async def fetch_linkedin(seen: set) -> list:
                         if job_id in seen:
                             continue
 
+                        # Исключаем США
+                        if is_usa(location):
+                            continue
+
                         jobs.append({
                             "id": job_id,
                             "source": "LinkedIn",
@@ -188,7 +215,8 @@ async def fetch_linkedin(seen: set) -> list:
                             "employer": company,
                             "salary": "",
                             "location": location,
-                            "link": link
+                            "link": link,
+                            "is_russian": is_russian(title)
                         })
                         seen.add(job_id)
 
@@ -213,7 +241,10 @@ async def run_check():
     print(f"hh.ru: {len(hh_jobs)}, LinkedIn: {len(li_jobs)}")
 
     if all_jobs:
-        header = f"🔍 <b>Вакансии Product Manager</b> — {datetime.now().strftime('%d.%m.%Y %H:%M')}\nНайдено новых: {len(all_jobs)}\n"
+        # Сначала вакансии на русском, потом остальные
+        all_jobs.sort(key=lambda j: (0 if j.get("is_russian") else 1))
+
+        header = f"🔍 <b>Вакансии Product Manager</b> — {datetime.now().strftime('%d.%m.%Y %H:%M')}\nНайдено новых: {len(all_jobs)}\n🇷🇺 На русском: {sum(1 for j in all_jobs if j.get('is_russian'))}\n"
         await send_telegram(header)
         for job in all_jobs:
             await send_telegram(format_job(job))
