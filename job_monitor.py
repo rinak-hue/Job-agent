@@ -43,12 +43,33 @@ ABROAD_RESTRICTED = [
     "только на территории", "офис обязателен"
 ]
 
+# Маркеры полностью удалённой / worldwide работы
+REMOTE_MARKERS = [
+    # Русские варианты
+    "удалённо", "удаленно", "удалённая работа", "удаленная работа",
+    "полностью удалённая", "полностью удаленная", "дистанционно",
+    "дистанционная работа", "из любой точки", "из любой страны",
+    "из любого города", "из любой точки мира", "из любого места",
+    "работа из дома", "home office", "формат: удалённо",
+    "работа удалённо", "работа дистанционно", "без привязки к офису",
+    "полный удалённый формат", "географически не привязан",
+    # Английские варианты
+    "remote", "fully remote", "100% remote", "remote-first",
+    "remote first", "work from anywhere", "work from home",
+    "worldwide", "anywhere", "global remote", "distributed team",
+    "location independent", "remote worldwide", "remote global",
+    "no office required", "fully distributed", "wfh", "telecommute",
+    "remote friendly", "remote ok",
+]
+
 SALARY_MIN = {"USD": 3000, "EUR": 3000, "RUR": 300000}
 
 CHECK_INTERVAL = 86400
 SEEN_FILE = "seen_jobs.json"
+
 MODE_ALL = "all"
 MODE_NO_RUSSIA = "no_russia"
+MODE_REMOTE_ONLY = "remote_only"  # только полностью удалённые / worldwide
 
 # Состояние бота
 current_mode = os.environ.get("MODE", MODE_ALL)
@@ -70,6 +91,11 @@ def is_office_schedule(schedule):
 
 def has_abroad_restriction(text):
     return any(phrase in text.lower() for phrase in ABROAD_RESTRICTED)
+
+def is_remote_worldwide(area, schedule, full_text):
+    """Проверяет что вакансия полностью удалённая или worldwide"""
+    combined = f"{area} {schedule} {full_text}".lower()
+    return any(marker in combined for marker in REMOTE_MARKERS)
 
 def salary_ok(salary):
     if not salary:
@@ -119,16 +145,23 @@ def format_job(job):
 
 async def fetch_hh(seen, mode):
     jobs = []
+
+    # Для remote_only добавляем специальные запросы
     searches = [
         {"text": "product manager", "schedule": "remote"},
         {"text": "product owner", "schedule": "remote"},
         {"text": "head of product", "schedule": "remote"},
         {"text": "продуктовый менеджер", "schedule": "remote"},
         {"text": "CPO", "schedule": "remote"},
-        {"text": "product manager"},
-        {"text": "product owner"},
-        {"text": "продуктовый менеджер"},
     ]
+
+    # В режиме all и no_russia добавляем поиск без фильтра расписания
+    if mode != MODE_REMOTE_ONLY:
+        searches += [
+            {"text": "product manager"},
+            {"text": "product owner"},
+            {"text": "продуктовый менеджер"},
+        ]
 
     async with httpx.AsyncClient(timeout=20) as client:
         for search in searches:
@@ -173,6 +206,8 @@ async def fetch_hh(seen, mode):
                         continue
                     if mode == MODE_NO_RUSSIA and is_russia_location(area):
                         continue
+                    if mode == MODE_REMOTE_ONLY and not is_remote_worldwide(area, schedule, full_text):
+                        continue
                     if not salary_ok(salary):
                         continue
 
@@ -202,11 +237,17 @@ async def fetch_hh(seen, mode):
 
     return jobs
 
-async def fetch_linkedin(seen, period_seconds=86400):
+async def fetch_linkedin(seen, period_seconds=86400, remote_only=False):
     jobs = []
+
+    # Для remote_only используем специальный запрос
+    if remote_only:
+        url = f"https://www.linkedin.com/jobs/search/?keywords=product+manager+remote&f_WT=2&f_TPR=r{period_seconds}&sortBy=DD"
+    else:
+        url = f"https://www.linkedin.com/jobs/search/?keywords=product+manager&f_WT=2&f_TPR=r{period_seconds}&sortBy=DD"
+
     async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
         try:
-            url = f"https://www.linkedin.com/jobs/search/?keywords=product+manager&f_WT=2&f_TPR=r{period_seconds}&sortBy=DD"
             resp = await client.get(url, headers={
                 "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 "Accept-Language": "en-US,en;q=0.9",
@@ -224,11 +265,16 @@ async def fetch_linkedin(seen, period_seconds=86400):
                     company = company_el.get_text(strip=True) if company_el else ""
                     link = link_el["href"].split("?")[0]
                     location = location_el.get_text(strip=True) if location_el else ""
+
                     if is_usa(location):
                         continue
+                    if remote_only and not is_remote_worldwide("", "", location):
+                        continue
+
                     job_id = f"li_{abs(hash(link))}"
                     if job_id in seen:
                         continue
+
                     jobs.append({
                         "id": job_id, "source": "LinkedIn", "title": title,
                         "employer": company, "salary": "", "location": location,
@@ -262,8 +308,9 @@ async def run_check():
         return
     seen = load_seen()
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Проверяю... режим: {current_mode}")
+    remote_only = current_mode == MODE_REMOTE_ONLY
     hh_jobs = await fetch_hh(seen, current_mode)
-    li_jobs = await fetch_linkedin(seen, 86400)
+    li_jobs = await fetch_linkedin(seen, 86400, remote_only)
     all_jobs = hh_jobs + li_jobs
     print(f"hh.ru: {len(hh_jobs)}, LinkedIn: {len(li_jobs)}")
     await send_jobs(all_jobs)
@@ -278,8 +325,9 @@ async def run_refresh():
     if os.path.exists(SEEN_FILE):
         os.remove(SEEN_FILE)
     seen = set()
+    remote_only = current_mode == MODE_REMOTE_ONLY
     hh_jobs = await fetch_hh(seen, current_mode)
-    li_jobs = await fetch_linkedin(seen, 345600)
+    li_jobs = await fetch_linkedin(seen, 345600, remote_only)
     await send_jobs(hh_jobs + li_jobs)
     save_seen(seen)
 
@@ -323,19 +371,28 @@ async def poll_commands():
                         current_mode = MODE_NO_RUSSIA
                         await send_telegram("✅ Режим: только вакансии не из России")
 
+                    elif text == "/mode_remote":
+                        current_mode = MODE_REMOTE_ONLY
+                        await send_telegram("✅ Режим: только полностью удалённые / worldwide вакансии")
+
                     elif text == "/status":
-                        mode_name = "все вакансии" if current_mode == MODE_ALL else "только не из России"
+                        mode_names = {
+                            MODE_ALL: "все вакансии",
+                            MODE_NO_RUSSIA: "только не из России",
+                            MODE_REMOTE_ONLY: "только remote / worldwide"
+                        }
                         status = "⏸ На паузе" if is_paused else "▶️ Активен"
                         await send_telegram(
                             f"⚙️ <b>Статус бота</b>\n"
                             f"Состояние: {status}\n"
-                            f"Режим: {mode_name}\n"
+                            f"Режим: {mode_names.get(current_mode, current_mode)}\n"
                             f"Проверка: раз в {CHECK_INTERVAL // 3600} ч.\n\n"
                             f"Команды:\n"
                             f"/stop — остановить\n"
                             f"/resume — возобновить\n"
                             f"/mode_all — все вакансии\n"
                             f"/mode_norussia — только не из России\n"
+                            f"/mode_remote — только remote/worldwide\n"
                             f"/refresh — подборка за 4 дня\n"
                             f"/status — этот экран"
                         )
@@ -345,17 +402,21 @@ async def poll_commands():
                 await asyncio.sleep(5)
 
 async def main():
-    global current_mode, is_paused
-    mode_name = "все вакансии" if current_mode == MODE_ALL else "только не из России"
+    mode_names = {
+        MODE_ALL: "все вакансии",
+        MODE_NO_RUSSIA: "только не из России",
+        MODE_REMOTE_ONLY: "только remote / worldwide"
+    }
     await send_telegram(
         f"✅ <b>Job Monitor запущен!</b>\n"
-        f"Режим: {mode_name}\n"
+        f"Режим: {mode_names.get(current_mode, current_mode)}\n"
         f"Проверка раз в {CHECK_INTERVAL // 3600} ч.\n\n"
         f"Команды:\n"
         f"/stop — остановить рассылку\n"
         f"/resume — возобновить\n"
         f"/mode_all — все вакансии\n"
         f"/mode_norussia — только не из России\n"
+        f"/mode_remote — только remote/worldwide\n"
         f"/refresh — подборка за 4 дня\n"
         f"/status — текущие настройки"
     )
@@ -369,6 +430,7 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 
 
