@@ -22,7 +22,6 @@ EXCLUDE_LOCATIONS = [
     "austin", "boston", "denver", "miami", "atlanta", "bartlett",
     "houston", "dallas", "phoenix", "philadelphia", "san diego",
     "portland", "nashville", "las vegas", "minneapolis", "detroit",
-    # Аббревиатуры штатов (с запятой перед ними как в LinkedIn)
     ", al", ", ak", ", az", ", ar", ", ca", ", co", ", ct", ", de",
     ", fl", ", ga", ", hi", ", id", ", il", ", in", ", ia", ", ks",
     ", ky", ", la", ", me", ", md", ", ma", ", mi", ", mn", ", ms",
@@ -30,6 +29,23 @@ EXCLUDE_LOCATIONS = [
     ", nc", ", nd", ", oh", ", ok", ", or", ", pa", ", ri", ", sc",
     ", sd", ", tn", ", tx", ", ut", ", vt", ", va", ", wa", ", wv",
     ", wi", ", wy", ", dc"
+]
+
+# Регионы России
+RUSSIA_LOCATIONS = [
+    "москва", "санкт-петербург", "спб", "екатеринбург", "новосибирск",
+    "казань", "нижний новгород", "челябинск", "самара", "омск",
+    "ростов", "уфа", "красноярск", "воронеж", "пермь", "россия"
+]
+
+# Фразы-маркеры что нельзя работать из-за рубежа
+ABROAD_RESTRICTED = [
+    "только офис", "офисный формат", "гибридный формат", "гибрид",
+    "работа в офисе", "присутствие в офисе", "только из россии",
+    "только рф", "только для жителей", "необходимо находиться",
+    "обязательное присутствие", "не рассматриваем кандидатов из-за рубежа",
+    "работа на территории рф", "резидент рф", "прописка",
+    "только на территории", "офис обязателен"
 ]
 
 # Как часто проверять (в секундах). 86400 = раз в день
@@ -42,8 +58,19 @@ def is_usa(location: str) -> bool:
     loc = location.lower()
     return any(excl in loc for excl in EXCLUDE_LOCATIONS)
 
-def is_russian(title: str) -> bool:
+def is_russian_text(title: str) -> bool:
     return bool(re.search(r'[а-яА-ЯёЁ]', title))
+
+def is_russia_location(area: str) -> bool:
+    return any(loc in area.lower() for loc in RUSSIA_LOCATIONS)
+
+def is_office_schedule(schedule: str) -> bool:
+    """Полный день / сменный = офис или гибрид в РФ"""
+    return any(s in schedule.lower() for s in ["полный день", "сменный", "вахтовый"])
+
+def has_abroad_restriction(text: str) -> bool:
+    t = text.lower()
+    return any(phrase in t for phrase in ABROAD_RESTRICTED)
 
 def load_seen():
     if os.path.exists(SEEN_FILE):
@@ -85,13 +112,11 @@ async def fetch_hh(seen: set) -> list:
     jobs = []
 
     searches = [
-        # Удалёнка — ищем по всему миру
         {"text": "product manager", "schedule": "remote"},
         {"text": "product owner", "schedule": "remote"},
         {"text": "head of product", "schedule": "remote"},
         {"text": "продуктовый менеджер", "schedule": "remote"},
         {"text": "CPO", "schedule": "remote"},
-        # Без ограничения по расписанию — поймём по локации
         {"text": "product manager"},
         {"text": "product owner"},
         {"text": "продуктовый менеджер"},
@@ -104,7 +129,7 @@ async def fetch_hh(seen: set) -> list:
                     "text": search["text"],
                     "per_page": 50,
                     "order_by": "publication_time",
-                    # Убираем search_field — ищем и в описании тоже
+                    "search_field": "name",
                 }
                 if "schedule" in search:
                     params["schedule"] = search["schedule"]
@@ -130,12 +155,25 @@ async def fetch_hh(seen: set) -> list:
                     employer = item.get("employer", {}).get("name", "")
                     link = item.get("alternate_url", "")
                     salary = item.get("salary")
-                    schedule = item.get("schedule", {}).get("name", "")
-                    area = item.get("area", {}).get("name", "")
+                    schedule = item.get("schedule", {}).get("name", "") or ""
+                    area = item.get("area", {}).get("name", "") or ""
+                    snippet = item.get("snippet", {})
+                    requirement = snippet.get("requirement", "") or ""
+                    responsibility = snippet.get("responsibility", "") or ""
+                    full_text = f"{title} {requirement} {responsibility}"
 
                     location_str = f"{area} · {schedule}".strip(" ·")
 
+                    # Фильтр США
                     if is_usa(location_str):
+                        continue
+
+                    # Фильтр офис/гибрид в России
+                    if is_russia_location(area) and is_office_schedule(schedule):
+                        continue
+
+                    # Фильтр запрета работы из-за рубежа
+                    if has_abroad_restriction(full_text):
                         continue
 
                     salary_str = ""
@@ -158,7 +196,7 @@ async def fetch_hh(seen: set) -> list:
                         "salary": salary_str,
                         "location": location_str,
                         "link": link,
-                        "is_russian": is_russian(title)
+                        "is_russian": is_russian_text(title)
                     })
                     seen.add(job_id)
 
@@ -213,7 +251,7 @@ async def fetch_linkedin_with_period(seen: set, period_seconds: int = 86400) -> 
                         "salary": "",
                         "location": location,
                         "link": link,
-                        "is_russian": is_russian(title)
+                        "is_russian": is_russian_text(title)
                     })
                     seen.add(job_id)
 
@@ -259,7 +297,7 @@ async def run_refresh():
 
     seen = set()
     hh_jobs = await fetch_hh(seen)
-    li_jobs = await fetch_linkedin_with_period(seen, 345600)  # 4 дня
+    li_jobs = await fetch_linkedin_with_period(seen, 345600)
     all_jobs = hh_jobs + li_jobs
 
     await send_jobs(all_jobs)
