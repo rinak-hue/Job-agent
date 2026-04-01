@@ -11,7 +11,7 @@ from bs4 import BeautifulSoup
 # НАСТРОЙКИ — ИЗМЕНИ ЗДЕСЬ
 # ============================================================
 TELEGRAM_TOKEN = "8795696345:AAF2fnRFMZ0xajUntVqrwYDbQiAzf9M3Ljs"
-TELEGRAM_CHAT_ID = ["248752467", "142247089"]
+TELEGRAM_CHAT_IDS = ["248752467", "142247089"]
 
 KEYWORDS = ["product manager", "продуктовый менеджер", "product owner", "CPO", "head of product"]
 
@@ -22,7 +22,7 @@ EXCLUDE_LOCATIONS = [
 ]
 
 # Как часто проверять (в секундах). 86400 = раз в день
-CHECK_INTERVAL = 86400
+CHECK_INTERVAL = 3600
 
 SEEN_FILE = "seen_jobs.json"
 # ============================================================
@@ -50,14 +50,15 @@ async def send_telegram(text: str):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     async with httpx.AsyncClient() as client:
         for chat_id in TELEGRAM_CHAT_IDS:
-            await client.post(url, json={
-                "chat_id": chat_id,
-                "text": text,
-                "parse_mode": "HTML",
-                "disable_web_page_preview": False
-            })
-        except Exception as e:
-            print(f"Ошибка отправки в Telegram: {e}")
+            try:
+                await client.post(url, json={
+                    "chat_id": chat_id,
+                    "text": text,
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": False
+                })
+            except Exception as e:
+                print(f"Ошибка отправки в Telegram для {chat_id}: {e}")
 
 def format_job(job: dict) -> str:
     flag = "🇷🇺 " if job.get("is_russian") else ""
@@ -267,4 +268,5 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
