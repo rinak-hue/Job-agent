@@ -22,7 +22,7 @@ EXCLUDE_LOCATIONS = [
 ]
 
 # Как часто проверять (в секундах). 86400 = раз в день
-CHECK_INTERVAL = 3600
+CHECK_INTERVAL = 86400
 
 SEEN_FILE = "seen_jobs.json"
 # ============================================================
@@ -231,6 +231,22 @@ async def fetch_linkedin(seen: set) -> list:
 
     return jobs
 
+async def send_jobs(jobs: list):
+    """Отправляет список вакансий в Telegram"""
+    if jobs:
+        jobs.sort(key=lambda j: (0 if j.get("is_russian") else 1))
+        header = (
+            f"🔍 <b>Вакансии Product Manager</b> — {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
+            f"Найдено: {len(jobs)}\n"
+            f"🇷🇺 На русском: {sum(1 for j in jobs if j.get('is_russian'))}\n"
+        )
+        await send_telegram(header)
+        for job in jobs:
+            await send_telegram(format_job(job))
+            await asyncio.sleep(0.5)
+    else:
+        await send_telegram("🤷 Новых вакансий не найдено")
+
 async def run_check():
     seen = load_seen()
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Проверяю вакансии...")
@@ -240,33 +256,119 @@ async def run_check():
     all_jobs = hh_jobs + li_jobs
 
     print(f"hh.ru: {len(hh_jobs)}, LinkedIn: {len(li_jobs)}")
-
-    if all_jobs:
-        # Сначала вакансии на русском, потом остальные
-        all_jobs.sort(key=lambda j: (0 if j.get("is_russian") else 1))
-
-        header = f"🔍 <b>Вакансии Product Manager</b> — {datetime.now().strftime('%d.%m.%Y %H:%M')}\nНайдено новых: {len(all_jobs)}\n🇷🇺 На русском: {sum(1 for j in all_jobs if j.get('is_russian'))}\n"
-        await send_telegram(header)
-        for job in all_jobs:
-            await send_telegram(format_job(job))
-            await asyncio.sleep(0.5)
-    else:
-        print("Новых вакансий нет")
-
+    await send_jobs(all_jobs)
     save_seen(seen)
+
+async def run_refresh():
+    """Сбрасывает историю и присылает вакансии за 4 дня"""
+    await send_telegram("🔄 Обновляю подборку за последние 4 дня...")
+
+    # Сбрасываем историю — так все вакансии придут заново
+    if os.path.exists(SEEN_FILE):
+        os.remove(SEEN_FILE)
+
+    # Меняем период на LinkedIn на 4 дня (345600 секунд)
+    seen = set()
+    hh_jobs = await fetch_hh(seen)
+
+    # Для LinkedIn меняем период
+    li_jobs = []
+    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+        try:
+            url = "https://www.linkedin.com/jobs/search/?keywords=product+manager&f_WT=2&f_TPR=r345600&sortBy=DD"
+            resp = await client.get(url, headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+                "Accept-Language": "en-US,en;q=0.9",
+            })
+            soup = BeautifulSoup(resp.text, "html.parser")
+            cards = soup.find_all("div", class_=re.compile("job-search-card|base-card"))
+            for card in cards[:30]:
+                try:
+                    title_el = card.find("h3")
+                    company_el = card.find("h4")
+                    link_el = card.find("a", href=True)
+                    location_el = card.find("span", class_=re.compile("location|job-search-card__location"))
+                    if not title_el or not link_el:
+                        continue
+                    title = title_el.get_text(strip=True)
+                    company = company_el.get_text(strip=True) if company_el else ""
+                    link = link_el["href"].split("?")[0]
+                    location = location_el.get_text(strip=True) if location_el else ""
+                    if is_usa(location):
+                        continue
+                    job_id = f"li_{abs(hash(link))}"
+                    li_jobs.append({
+                        "id": job_id,
+                        "source": "LinkedIn",
+                        "title": title,
+                        "employer": company,
+                        "salary": "",
+                        "location": location,
+                        "link": link,
+                        "is_russian": is_russian(title)
+                    })
+                    seen.add(job_id)
+                except Exception:
+                    continue
+        except Exception as e:
+            print(f"Ошибка LinkedIn refresh: {e}")
+
+    all_jobs = hh_jobs + li_jobs
+    await send_jobs(all_jobs)
+    save_seen(seen)
+
+async def poll_commands():
+    """Слушает команды от пользователя в Telegram"""
+    offset = None
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        while True:
+            try:
+                params = {"timeout": 10}
+                if offset:
+                    params["offset"] = offset
+
+                resp = await client.get(url, params=params)
+                data = resp.json()
+
+                for update in data.get("result", []):
+                    offset = update["update_id"] + 1
+                    msg = update.get("message", {})
+                    chat_id = str(msg.get("chat", {}).get("id", ""))
+                    text = msg.get("text", "")
+
+                    # Принимаем команды только от владельцев бота
+                    if chat_id in TELEGRAM_CHAT_IDS and text == "/refresh":
+                        print(f"Получена команда /refresh от {chat_id}")
+                        asyncio.create_task(run_refresh())
+
+            except Exception as e:
+                print(f"Ошибка polling: {e}")
+                await asyncio.sleep(5)
 
 async def main():
     await send_telegram(
         "✅ <b>Job Monitor запущен!</b>\n"
         "Ищу вакансии Product Manager на hh.ru и LinkedIn.\n"
-        f"Проверка раз в {CHECK_INTERVAL // 3600} ч."
+        f"Проверка раз в {CHECK_INTERVAL // 3600} ч.\n\n"
+        "Команды:\n/refresh — прислать подборку за 4 дня прямо сейчас"
     )
-    while True:
-        await run_check()
-        print(f"Следующая проверка через {CHECK_INTERVAL // 3600} ч.")
-        await asyncio.sleep(CHECK_INTERVAL)
+
+    # Запускаем мониторинг и слушатель команд параллельно
+    async def check_loop():
+        while True:
+            await run_check()
+            print(f"Следующая проверка через {CHECK_INTERVAL // 3600} ч.")
+            await asyncio.sleep(CHECK_INTERVAL)
+
+    await asyncio.gather(
+        check_loop(),
+        poll_commands()
+    )
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 
