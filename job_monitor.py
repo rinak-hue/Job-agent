@@ -48,11 +48,33 @@ ABROAD_RESTRICTED = [
     "только на территории", "офис обязателен"
 ]
 
+# Минимальная зарплата по валютам
+SALARY_MIN = {
+    "USD": 3000,
+    "EUR": 3000,
+    "RUR": 300000,
+}
+
 # Как часто проверять (в секундах). 86400 = раз в день
 CHECK_INTERVAL = 86400
 
 SEEN_FILE = "seen_jobs.json"
+SETTINGS_FILE = "settings.json"
 # ============================================================
+
+# Режимы фильтрации
+MODE_ALL = "all"          # все вакансии
+MODE_NO_RUSSIA = "no_russia"  # исключить Россию
+
+def load_settings():
+    if os.path.exists(SETTINGS_FILE):
+        with open(SETTINGS_FILE, "r") as f:
+            return json.load(f)
+    return {"mode": MODE_ALL}
+
+def save_settings(settings):
+    with open(SETTINGS_FILE, "w") as f:
+        json.dump(settings, f)
 
 def is_usa(location: str) -> bool:
     loc = location.lower()
@@ -65,12 +87,24 @@ def is_russia_location(area: str) -> bool:
     return any(loc in area.lower() for loc in RUSSIA_LOCATIONS)
 
 def is_office_schedule(schedule: str) -> bool:
-    """Полный день / сменный = офис или гибрид в РФ"""
     return any(s in schedule.lower() for s in ["полный день", "сменный", "вахтовый"])
 
 def has_abroad_restriction(text: str) -> bool:
     t = text.lower()
     return any(phrase in t for phrase in ABROAD_RESTRICTED)
+
+def salary_ok(salary: dict) -> bool:
+    """Пропускает вакансии без зарплаты или с зарплатой выше минимума"""
+    if not salary:
+        return True  # нет зарплаты — присылаем
+
+    currency = salary.get("currency", "").upper()
+    amount = salary.get("from") or salary.get("to") or 0
+    min_salary = SALARY_MIN.get(currency)
+
+    if min_salary is None:
+        return True  # неизвестная валюта — присылаем
+    return amount >= min_salary
 
 def load_seen():
     if os.path.exists(SEEN_FILE):
@@ -108,7 +142,7 @@ def format_job(job: dict) -> str:
     lines.append(f"🔗 <a href='{job['link']}'>{job['source']}</a>")
     return "\n".join(lines)
 
-async def fetch_hh(seen: set) -> list:
+async def fetch_hh(seen: set, mode: str) -> list:
     jobs = []
 
     searches = [
@@ -141,7 +175,6 @@ async def fetch_hh(seen: set) -> list:
                 )
 
                 if resp.status_code != 200:
-                    print(f"hh.ru {resp.status_code} для '{search['text']}'")
                     continue
 
                 data = resp.json()
@@ -174,6 +207,14 @@ async def fetch_hh(seen: set) -> list:
 
                     # Фильтр запрета работы из-за рубежа
                     if has_abroad_restriction(full_text):
+                        continue
+
+                    # Фильтр режима: только не-Россия
+                    if mode == MODE_NO_RUSSIA and is_russia_location(area):
+                        continue
+
+                    # Фильтр зарплаты
+                    if not salary_ok(salary):
                         continue
 
                     salary_str = ""
@@ -279,10 +320,11 @@ async def send_jobs(jobs: list):
         await send_telegram("🤷 Новых вакансий не найдено")
 
 async def run_check():
+    settings = load_settings()
     seen = load_seen()
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] Проверяю вакансии...")
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] Проверяю вакансии... режим: {settings['mode']}")
 
-    hh_jobs = await fetch_hh(seen)
+    hh_jobs = await fetch_hh(seen, settings["mode"])
     li_jobs = await fetch_linkedin_with_period(seen, 86400)
     all_jobs = hh_jobs + li_jobs
 
@@ -291,12 +333,13 @@ async def run_check():
     save_seen(seen)
 
 async def run_refresh():
+    settings = load_settings()
     await send_telegram("🔄 Обновляю подборку за последние 4 дня...")
     if os.path.exists(SEEN_FILE):
         os.remove(SEEN_FILE)
 
     seen = set()
-    hh_jobs = await fetch_hh(seen)
+    hh_jobs = await fetch_hh(seen, settings["mode"])
     li_jobs = await fetch_linkedin_with_period(seen, 345600)
     all_jobs = hh_jobs + li_jobs
 
@@ -321,11 +364,39 @@ async def poll_commands():
                     offset = update["update_id"] + 1
                     msg = update.get("message", {})
                     chat_id = str(msg.get("chat", {}).get("id", ""))
-                    text = msg.get("text", "")
+                    text = msg.get("text", "").strip()
 
-                    if chat_id in TELEGRAM_CHAT_IDS and text == "/refresh":
-                        print(f"Команда /refresh от {chat_id}")
+                    if chat_id not in TELEGRAM_CHAT_IDS:
+                        continue
+
+                    if text == "/refresh":
                         asyncio.create_task(run_refresh())
+
+                    elif text == "/mode_all":
+                        settings = load_settings()
+                        settings["mode"] = MODE_ALL
+                        save_settings(settings)
+                        await send_telegram("✅ Режим: все вакансии (включая Россию)")
+
+                    elif text == "/mode_norussia":
+                        settings = load_settings()
+                        settings["mode"] = MODE_NO_RUSSIA
+                        save_settings(settings)
+                        await send_telegram("✅ Режим: только вакансии не из России")
+
+                    elif text == "/status":
+                        settings = load_settings()
+                        mode_name = "все вакансии" if settings["mode"] == MODE_ALL else "только не из России"
+                        await send_telegram(
+                            f"⚙️ <b>Статус бота</b>\n"
+                            f"Режим: {mode_name}\n"
+                            f"Проверка: раз в {CHECK_INTERVAL // 3600} ч.\n\n"
+                            f"Команды:\n"
+                            f"/mode_all — все вакансии\n"
+                            f"/mode_norussia — только не из России\n"
+                            f"/refresh — подборка за 4 дня\n"
+                            f"/status — этот экран"
+                        )
 
             except Exception as e:
                 print(f"Ошибка polling: {e}")
@@ -336,7 +407,11 @@ async def main():
         "✅ <b>Job Monitor запущен!</b>\n"
         "Ищу вакансии Product Manager на hh.ru и LinkedIn.\n"
         f"Проверка раз в {CHECK_INTERVAL // 3600} ч.\n\n"
-        "Команды:\n/refresh — подборка за 4 дня прямо сейчас"
+        "Команды:\n"
+        "/mode_all — все вакансии\n"
+        "/mode_norussia — только не из России\n"
+        "/refresh — подборка за 4 дня\n"
+        "/status — текущие настройки"
     )
 
     async def check_loop():
@@ -352,6 +427,7 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 
 
