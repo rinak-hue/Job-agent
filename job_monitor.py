@@ -1,16 +1,13 @@
 import asyncio
 import json
 import os
-import re
-import time
 from datetime import datetime
 import httpx
 from bs4 import BeautifulSoup
+import re
 
 # ============================================================
-# НАСТРОЙКИ — ИЗМЕНИ ЗДЕСЬ
-# ============================================================
-TELEGRAM_TOKEN = "8795696345:AAF2fnRFMZ0xajUntVqrwYDbQiAzf9M3Ljs"
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "ВСТАВЬ_СВОЙ_ТОКЕН")
 TELEGRAM_CHAT_IDS = ["248752467", "142247089"]
 
 EXCLUDE_LOCATIONS = [
@@ -26,6 +23,22 @@ EXCLUDE_LOCATIONS = [
     ", nc", ", nd", ", oh", ", ok", ", or", ", pa", ", ri", ", sc",
     ", sd", ", tn", ", tx", ", ut", ", vt", ", va", ", wa", ", wv",
     ", wi", ", wy", ", dc"
+]
+
+# Страны СНГ которые исключаем
+EXCLUDE_CIS = [
+    'кыргызстан', 'kyrgyzstan', 'бишкек', 'bishkek',
+    'таджикистан', 'tajikistan',
+    'туркменистан', 'turkmenistan',
+]
+
+# Предпочтительные локации (Грузия, Армения, Европа, удалёнка)
+PREFERRED_LOCATIONS = [
+    'georgia', 'tbilisi', 'грузия', 'тбилиси',
+    'armenia', 'yerevan', 'армения', 'ереван',
+    'serbia', 'belgrade', 'сербия', 'белград',
+    'cyprus', 'кипр', 'nicosia',
+    'remote', 'удалённо', 'удаленно',
 ]
 
 RUSSIA_LOCATIONS = [
@@ -200,6 +213,9 @@ async def fetch_hh(seen, mode):
 
                     if is_usa(location_str):
                         continue
+                    # Исключаем Казахстан и другие нерелевантные СНГ
+                    if any(c in location_str.lower() for c in EXCLUDE_CIS):
+                        continue
                     if is_russia_location(area) and is_office_schedule(schedule):
                         continue
                     if has_abroad_restriction(full_text):
@@ -240,51 +256,70 @@ async def fetch_hh(seen, mode):
 async def fetch_linkedin(seen, period_seconds=86400, remote_only=False):
     jobs = []
 
-    # Для remote_only используем специальный запрос
+    # Несколько запросов для большего охвата
     if remote_only:
-        url = f"https://www.linkedin.com/jobs/search/?keywords=product+manager+remote&f_WT=2&f_TPR=r{period_seconds}&sortBy=DD"
+        queries = [
+            "product+manager+remote",
+            "product+owner+remote",
+            "head+of+product+remote",
+        ]
     else:
-        url = f"https://www.linkedin.com/jobs/search/?keywords=product+manager&f_WT=2&f_TPR=r{period_seconds}&sortBy=DD"
+        queries = [
+            "product+manager+georgia",
+            "product+manager+armenia",
+            "product+manager+serbia",
+            "product+manager+cyprus",
+            "product+manager+europe+remote",
+            "product+owner+remote",
+            "head+of+product+remote",
+            "product+manager",
+        ]
 
     async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
-        try:
-            resp = await client.get(url, headers={
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept-Language": "en-US,en;q=0.9",
-            })
-            soup = BeautifulSoup(resp.text, "html.parser")
-            for card in soup.find_all("div", class_=re.compile("job-search-card|base-card"))[:30]:
-                try:
-                    title_el = card.find("h3")
-                    company_el = card.find("h4")
-                    link_el = card.find("a", href=True)
-                    location_el = card.find("span", class_=re.compile("location|job-search-card__location"))
-                    if not title_el or not link_el:
-                        continue
-                    title = title_el.get_text(strip=True)
-                    company = company_el.get_text(strip=True) if company_el else ""
-                    link = link_el["href"].split("?")[0]
-                    location = location_el.get_text(strip=True) if location_el else ""
+        for query in queries:
+            try:
+                wt = "&f_WT=2" if remote_only else ""
+                url = f"https://www.linkedin.com/jobs/search/?keywords={query}{wt}&f_TPR=r{period_seconds}&sortBy=DD"
+                resp = await client.get(url, headers={
+                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "Accept-Language": "en-US,en;q=0.9",
+                })
+                soup = BeautifulSoup(resp.text, "html.parser")
+                for card in soup.find_all("div", class_=re.compile("job-search-card|base-card"))[:15]:
+                    try:
+                        title_el = card.find("h3")
+                        company_el = card.find("h4")
+                        link_el = card.find("a", href=True)
+                        location_el = card.find("span", class_=re.compile("location|job-search-card__location"))
+                        if not title_el or not link_el:
+                            continue
+                        title = title_el.get_text(strip=True)
+                        company = company_el.get_text(strip=True) if company_el else ""
+                        link = link_el["href"].split("?")[0]
+                        location = location_el.get_text(strip=True) if location_el else ""
 
-                    if is_usa(location):
-                        continue
-                    if remote_only and not is_remote_worldwide("", "", location):
-                        continue
+                        if is_usa(location):
+                            continue
+                        if any(c in location.lower() for c in EXCLUDE_CIS):
+                            continue
+                        if remote_only and not is_remote_worldwide("", "", location):
+                            continue
 
-                    job_id = f"li_{abs(hash(link))}"
-                    if job_id in seen:
-                        continue
+                        job_id = f"li_{abs(hash(link))}"
+                        if job_id in seen:
+                            continue
 
-                    jobs.append({
-                        "id": job_id, "source": "LinkedIn", "title": title,
-                        "employer": company, "salary": "", "location": location,
-                        "link": link, "is_russian": is_russian_text(title)
-                    })
-                    seen.add(job_id)
-                except Exception:
-                    continue
-        except Exception as e:
-            print(f"Ошибка LinkedIn: {e}")
+                        jobs.append({
+                            "id": job_id, "source": "LinkedIn", "title": title,
+                            "employer": company, "salary": "", "location": location,
+                            "link": link, "is_russian": is_russian_text(title)
+                        })
+                        seen.add(job_id)
+                    except Exception:
+                        continue
+                await asyncio.sleep(1)
+            except Exception as e:
+                print(f"Ошибка LinkedIn '{query}': {e}")
     return jobs
 
 async def send_jobs(jobs):
@@ -430,7 +465,6 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
 
 
 
