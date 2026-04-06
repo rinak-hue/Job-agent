@@ -37,15 +37,25 @@ PREFERRED_LOCATIONS = [
     'georgia', 'tbilisi', 'грузия', 'тбилиси',
     'armenia', 'yerevan', 'армения', 'ереван',
     'serbia', 'belgrade', 'сербия', 'белград',
-    'cyprus', 'кипр', 'nicosia',
+    'cyprus', 'кипр', 'nicosia', 'лимассол', 'limassol'
     'remote', 'удалённо', 'удаленно',
 ]
 
-RUSSIA_LOCATIONS = [
+# Все российские города (для фильтра офис/гибрид)
+RUSSIA_LOCATIONS_ALL = [
     "москва", "санкт-петербург", "спб", "екатеринбург", "новосибирск",
     "казань", "нижний новгород", "челябинск", "самара", "омск",
     "ростов", "уфа", "красноярск", "воронеж", "пермь", "россия"
 ]
+# Только Москва и Питер — оставляем в режиме all
+RUSSIA_LOCATIONS_ALLOWED = ["москва", "санкт-петербург", "спб"]
+# Региональные города России — исключаем в режиме all
+RUSSIA_REGIONS = [
+    "екатеринбург", "новосибирск", "казань", "нижний новгород",
+    "челябинск", "самара", "омск", "ростов", "уфа",
+    "красноярск", "воронеж", "пермь"
+]
+RUSSIA_LOCATIONS = RUSSIA_LOCATIONS_ALL
 
 ABROAD_RESTRICTED = [
     "только офис", "офисный формат", "гибридный формат", "гибрид",
@@ -75,7 +85,13 @@ REMOTE_MARKERS = [
     "remote friendly", "remote ok",
 ]
 
-SALARY_MIN = {"USD": 3000, "EUR": 3000, "RUR": 300000}
+SALARY_MIN = {
+    "USD": 3000,
+    "EUR": 3000,
+    "RUR": 300000,
+    "KZT": 1500000,   # ~3000 USD
+    "UZS": 38000000,  # ~3000 USD
+}
 
 CHECK_INTERVAL = 7200
 SEEN_FILE = "seen_jobs.json"
@@ -213,8 +229,11 @@ async def fetch_hh(seen, mode):
 
                     if is_usa(location_str):
                         continue
-                    # Исключаем Казахстан и другие нерелевантные СНГ
+                    # Исключаем нерелевантные СНГ
                     if any(c in location_str.lower() for c in EXCLUDE_CIS):
+                        continue
+                    # В режиме all — исключаем российские регионы кроме Москвы и Питера
+                    if mode == MODE_ALL and any(r in area.lower() for r in RUSSIA_REGIONS):
                         continue
                     if is_russia_location(area) and is_office_schedule(schedule):
                         continue
@@ -253,7 +272,7 @@ async def fetch_hh(seen, mode):
 
     return jobs
 
-async def fetch_linkedin(seen, period_seconds=86400, remote_only=False):
+async def fetch_linkedin(seen, period_seconds=86400, remote_only=False, mode=None):
     jobs = []
 
     # Несколько запросов для большего охвата
@@ -302,6 +321,9 @@ async def fetch_linkedin(seen, period_seconds=86400, remote_only=False):
                             continue
                         if any(c in location.lower() for c in EXCLUDE_CIS):
                             continue
+                        # В режиме all — исключаем российские регионы кроме Москвы и Питера
+                        if mode == MODE_ALL and any(r in location.lower() for r in RUSSIA_REGIONS):
+                            continue
                         if remote_only and not is_remote_worldwide("", "", location):
                             continue
 
@@ -345,7 +367,7 @@ async def run_check():
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Проверяю... режим: {current_mode}")
     remote_only = current_mode == MODE_REMOTE_ONLY
     hh_jobs = await fetch_hh(seen, current_mode)
-    li_jobs = await fetch_linkedin(seen, 86400, remote_only)
+    li_jobs = await fetch_linkedin(seen, 86400, remote_only, current_mode)
     all_jobs = hh_jobs + li_jobs
     print(f"hh.ru: {len(hh_jobs)}, LinkedIn: {len(li_jobs)}")
     await send_jobs(all_jobs)
@@ -362,7 +384,7 @@ async def run_refresh():
     seen = set()
     remote_only = current_mode == MODE_REMOTE_ONLY
     hh_jobs = await fetch_hh(seen, current_mode)
-    li_jobs = await fetch_linkedin(seen, 345600, remote_only)
+    li_jobs = await fetch_linkedin(seen, 345600, remote_only, current_mode)
     await send_jobs(hh_jobs + li_jobs)
     save_seen(seen)
 
