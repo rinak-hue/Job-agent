@@ -25,37 +25,54 @@ EXCLUDE_LOCATIONS = [
     ", wi", ", wy", ", dc"
 ]
 
+RUSSIA_LOCATIONS = [
+    "россия", "russia",
+    "москва", "moscow", "санкт-петербург", "saint-petersburg", "спб",
+    "екатеринбург", "новосибирск", "казань", "нижний новгород",
+    "челябинск", "самара", "омск", "ростов", "уфа", "красноярск",
+    "воронеж", "пермь", "краснодар", "волгоград", "саратов",
+    "тюмень", "тольятти", "ижевск", "барнаул", "ульяновск",
+    "иркутск", "хабаровск", "владивосток", "ярославль", "махачкала",
+    "томск", "оренбург", "кемерово", "новокузнецк", "рязань",
+    "астрахань", "пенза", "липецк", "тула", "киров", "чебоксары",
+    "калининград", "брянск", "курск", "иваново", "магнитогорск",
+    "тверь", "ставрополь", "белгород", "нижний тагил", "архангельск",
+    "мурманск", "сочи", "владикавказ", "грозный", "улан-удэ",
+    "якутск", "чита", "сургут", "нижневартовск", "череповец",
+    "вологда", "смоленск", "калуга", "орёл", "владимир", "кострома",
+]
+
 # Страны СНГ которые исключаем
 EXCLUDE_CIS = [
-    'кыргызстан', 'kyrgyzstan', 'бишкек', 'bishkek',
-    'таджикистан', 'tajikistan',
-    'туркменистан', 'turkmenistan',
+    "кыргызстан", "kyrgyzstan", "бишкек", "bishkek",
+    "таджикистан", "tajikistan",
+    "туркменистан", "turkmenistan",
 ]
 
-# Предпочтительные локации (Грузия, Армения, Европа, удалёнка)
+# Предпочтительные локации — идут первыми в выдаче
 PREFERRED_LOCATIONS = [
-    'georgia', 'tbilisi', 'грузия', 'тбилиси',
-    'armenia', 'yerevan', 'армения', 'ереван',
-    'serbia', 'belgrade', 'сербия', 'белград',
-    'cyprus', 'кипр', 'nicosia', 'лимассол', 'limassol'
-    'remote', 'удалённо', 'удаленно',
+    "georgia", "tbilisi", "грузия", "тбилиси", "батуми",
+    "armenia", "yerevan", "армения", "ереван",
+    "serbia", "belgrade", "сербия", "белград",
+    "cyprus", "кипр", "nicosia", "limassol",
+    "remote", "удалённо", "удаленно", "дистанционно",
 ]
 
-# Все российские города (для фильтра офис/гибрид)
-RUSSIA_LOCATIONS_ALL = [
-    "москва", "санкт-петербург", "спб", "екатеринбург", "новосибирск",
-    "казань", "нижний новгород", "челябинск", "самара", "омск",
-    "ростов", "уфа", "красноярск", "воронеж", "пермь", "россия"
-]
-# Только Москва и Питер — оставляем в режиме all
-RUSSIA_LOCATIONS_ALLOWED = ["москва", "санкт-петербург", "спб"]
-# Региональные города России — исключаем в режиме all
-RUSSIA_REGIONS = [
+# Российские города исключаемые в mode_all (оставляем только Москву и Питер)
+RUSSIA_CITIES_EXCLUDE = [
     "екатеринбург", "новосибирск", "казань", "нижний новгород",
-    "челябинск", "самара", "омск", "ростов", "уфа",
-    "красноярск", "воронеж", "пермь"
+    "челябинск", "самара", "омск", "ростов", "уфа", "красноярск",
+    "воронеж", "пермь", "краснодар", "волгоград", "саратов",
+    "тюмень", "тольятти", "ижевск", "барнаул", "ульяновск",
+    "иркутск", "хабаровск", "владивосток", "ярославль", "махачкала",
+    "томск", "оренбург", "кемерово", "новокузнецк", "рязань",
+    "астрахань", "пенза", "липецк", "тула", "киров", "чебоксары",
+    "калининград", "брянск", "курск", "иваново", "магнитогорск",
+    "тверь", "ставрополь", "белгород", "нижний тагил", "архангельск",
+    "мурманск", "сочи", "владикавказ", "грозный", "улан-удэ",
+    "якутск", "чита", "сургут", "нижневартовск", "череповец",
+    "вологда", "смоленск", "калуга", "орёл", "владимир", "кострома",
 ]
-RUSSIA_LOCATIONS = RUSSIA_LOCATIONS_ALL
 
 ABROAD_RESTRICTED = [
     "только офис", "офисный формат", "гибридный формат", "гибрид",
@@ -85,13 +102,7 @@ REMOTE_MARKERS = [
     "remote friendly", "remote ok",
 ]
 
-SALARY_MIN = {
-    "USD": 3000,
-    "EUR": 3000,
-    "RUR": 300000,
-    "KZT": 1500000,   # ~3000 USD
-    "UZS": 38000000,  # ~3000 USD
-}
+SALARY_MIN = {"USD": 3000, "EUR": 3000, "RUR": 300000}
 
 CHECK_INTERVAL = 7200
 SEEN_FILE = "seen_jobs.json"
@@ -120,6 +131,14 @@ def is_office_schedule(schedule):
 
 def has_abroad_restriction(text):
     return any(phrase in text.lower() for phrase in ABROAD_RESTRICTED)
+
+def is_cis_excluded(location):
+    loc = location.lower()
+    return any(c in loc for c in EXCLUDE_CIS)
+
+def is_preferred(location):
+    loc = location.lower()
+    return any(p in loc for p in PREFERRED_LOCATIONS)
 
 def is_remote_worldwide(area, schedule, full_text):
     """Проверяет что вакансия полностью удалённая или worldwide"""
@@ -229,11 +248,7 @@ async def fetch_hh(seen, mode):
 
                     if is_usa(location_str):
                         continue
-                    # Исключаем нерелевантные СНГ
-                    if any(c in location_str.lower() for c in EXCLUDE_CIS):
-                        continue
-                    # В режиме all — исключаем российские регионы кроме Москвы и Питера
-                    if mode == MODE_ALL and any(r in area.lower() for r in RUSSIA_REGIONS):
+                    if is_cis_excluded(location_str):
                         continue
                     if is_russia_location(area) and is_office_schedule(schedule):
                         continue
@@ -241,6 +256,10 @@ async def fetch_hh(seen, mode):
                         continue
                     if mode == MODE_NO_RUSSIA and is_russia_location(area):
                         continue
+                    if mode == MODE_ALL and is_russia_location(area):
+                        area_lower = area.lower()
+                        if not any(c in area_lower for c in ["москва", "moscow", "санкт-петербург", "saint-petersburg", "спб"]):
+                            continue
                     if mode == MODE_REMOTE_ONLY and not is_remote_worldwide(area, schedule, full_text):
                         continue
                     if not salary_ok(salary):
@@ -272,33 +291,44 @@ async def fetch_hh(seen, mode):
 
     return jobs
 
-async def fetch_linkedin(seen, period_seconds=86400, remote_only=False, mode=None):
+async def fetch_linkedin(seen, period_seconds=86400, remote_only=False, mode=MODE_ALL):
     jobs = []
 
-    # Несколько запросов для большего охвата
     if remote_only:
-        queries = [
-            "product+manager+remote",
-            "product+owner+remote",
-            "head+of+product+remote",
+        geo_queries = [
+            ("product+manager+remote", "", "Remote"),
+            ("product+owner+remote", "", "Remote"),
+            ("head+of+product+remote", "", "Remote"),
         ]
     else:
-        queries = [
-            "product+manager+georgia",
-            "product+manager+armenia",
-            "product+manager+serbia",
-            "product+manager+cyprus",
-            "product+manager+europe+remote",
-            "product+owner+remote",
-            "head+of+product+remote",
-            "product+manager",
+        geo_queries = [
+            # Предпочтительные локации
+            ("product+manager", "106093601", "Georgia"),
+            ("product+owner", "106093601", "Georgia"),
+            ("product+manager", "102669407", "Armenia"),
+            ("product+manager", "101855366", "Serbia"),
+            ("product+manager", "104246216", "Cyprus"),
+            # Европа
+            ("product+manager", "105072130", "Poland"),
+            ("product+manager", "102974008", "Latvia"),
+            ("product+manager", "101464403", "Lithuania"),
+            # Remote
+            ("product+manager+remote", "", "Remote"),
+            ("head+of+product+remote", "", "Remote"),
+            # Общий поиск
+            ("product+manager", "", "Global"),
         ]
 
     async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
-        for query in queries:
+        for keywords, geo_id, label in geo_queries:
             try:
+                geo_param = f"&geoId={geo_id}" if geo_id else ""
                 wt = "&f_WT=2" if remote_only else ""
-                url = f"https://www.linkedin.com/jobs/search/?keywords={query}{wt}&f_TPR=r{period_seconds}&sortBy=DD"
+                url = (
+                    f"https://www.linkedin.com/jobs/search/"
+                    f"?keywords={keywords}{geo_param}{wt}"
+                    f"&f_TPR=r{period_seconds}&sortBy=DD"
+                )
                 resp = await client.get(url, headers={
                     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                     "Accept-Language": "en-US,en;q=0.9",
@@ -315,15 +345,20 @@ async def fetch_linkedin(seen, period_seconds=86400, remote_only=False, mode=Non
                         title = title_el.get_text(strip=True)
                         company = company_el.get_text(strip=True) if company_el else ""
                         link = link_el["href"].split("?")[0]
-                        location = location_el.get_text(strip=True) if location_el else ""
+                        location = location_el.get_text(strip=True) if location_el else label
 
+                        loc_lower = location.lower()
                         if is_usa(location):
                             continue
-                        if any(c in location.lower() for c in EXCLUDE_CIS):
+                        if "united states" in loc_lower or ", us" in loc_lower:
                             continue
-                        # В режиме all — исключаем российские регионы кроме Москвы и Питера
-                        if mode == MODE_ALL and any(r in location.lower() for r in RUSSIA_REGIONS):
+                        if is_cis_excluded(location):
                             continue
+                        if mode == MODE_NO_RUSSIA and is_russia_location(loc_lower):
+                            continue
+                        if mode == MODE_ALL and is_russia_location(loc_lower):
+                            if not any(c in loc_lower for c in ["москва", "moscow", "санкт-петербург", "спб"]):
+                                continue
                         if remote_only and not is_remote_worldwide("", "", location):
                             continue
 
@@ -332,8 +367,9 @@ async def fetch_linkedin(seen, period_seconds=86400, remote_only=False, mode=Non
                             continue
 
                         jobs.append({
-                            "id": job_id, "source": "LinkedIn", "title": title,
-                            "employer": company, "salary": "", "location": location,
+                            "id": job_id, "source": f"LinkedIn ({label})",
+                            "title": title, "employer": company,
+                            "salary": "", "location": location or label,
                             "link": link, "is_russian": is_russian_text(title)
                         })
                         seen.add(job_id)
@@ -341,12 +377,19 @@ async def fetch_linkedin(seen, period_seconds=86400, remote_only=False, mode=Non
                         continue
                 await asyncio.sleep(1)
             except Exception as e:
-                print(f"Ошибка LinkedIn '{query}': {e}")
+                print(f"Ошибка LinkedIn '{label}': {e}")
     return jobs
 
 async def send_jobs(jobs):
     if jobs:
-        jobs.sort(key=lambda j: (0 if j.get("is_russian") else 1))
+        def sort_key(j):
+            loc = (j.get("location") or "").lower()
+            if is_preferred(loc):
+                return 0
+            if any(p in loc for p in ["poland", "latvia", "lithuania", "estonia"]):
+                return 1
+            return 2
+        jobs.sort(key=sort_key)
         await send_telegram(
             f"🔍 <b>Вакансии Product Manager</b> — {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
             f"Найдено: {len(jobs)}\n"
@@ -487,6 +530,7 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 
 
