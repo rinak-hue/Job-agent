@@ -8,7 +8,7 @@ import re
 
 # ============================================================
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "ВСТАВЬ_СВОЙ_ТОКЕН")
-TELEGRAM_CHAT_IDS = ["248752467", "6522826404"]
+TELEGRAM_CHAT_IDS = ["248752467", "142247089"]
 
 EXCLUDE_LOCATIONS = [
     "united states", "usa", "u.s.", "u.s.a",
